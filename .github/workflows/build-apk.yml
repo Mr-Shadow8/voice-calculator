@@ -53,26 +53,54 @@ jobs:
           restore-keys: |
             buildozer-${{ runner.os }}-
 
-      # ---- 6. 配置环境变量(给 buildozer 用) ----
+      # ---- 6. 设置环境变量 ----
       - name: Configure buildozer environment
         run: |
-          # CI 里非交互运行,需要把 ANDROID_HOME 提前设好
           echo "ANDROID_HOME=$HOME/.buildozer/android/platform/android-sdk" >> $GITHUB_ENV
-          # 写一个 user.local.properties 避免 buildozer 卡在询问
+          echo "ANDROID_SDK_ROOT=$HOME/.buildozer/android/platform/android-sdk" >> $GITHUB_ENV
           mkdir -p ~/.buildozer
-          echo "[buildozer]" > ~/.buildozer/buildozer.spec.bak
-          # 接受 Android SDK 许可(避免 CI 卡住)
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
 
-      # ---- 7. 编译 APK(debug 版本) ----
+      # ---- 7. 触发 buildozer 下载 SDK(p4a 会失败但 SDK 已下下来) ----
+      - name: Pre-download Android SDK
+        run: |
+          # 第一次运行 buildozer,会下载 Android SDK/NDK;
+          # 它会因为 license 没接受而失败,这步允许失败
+          buildozer -v android help > /dev/null 2>&1 || true
+          # 保险:再尝试一次让 SDK 完整下载
+          buildozer -v android adb > /dev/null 2>&1 || true
+
+      # ---- 8. 接受所有 Android SDK License(修复 build-tools;37 无法安装的问题) ----
+      - name: Accept Android SDK licenses
+        run: |
+          SDK_ROOT="$HOME/.buildozer/android/platform/android-sdk"
+          echo "SDK_ROOT=$SDK_ROOT"
+          ls -la "$SDK_ROOT" 2>/dev/null || { echo "SDK not found"; exit 1; }
+          # 找 sdkmanager(可能在 tools/bin 或 cmdline-tools/*/bin)
+          SDKMANAGER=$(find "$SDK_ROOT" -name sdkmanager -type f 2>/dev/null | head -1)
+          echo "Found sdkmanager: $SDKMANAGER"
+          if [ -z "$SDKMANAGER" ]; then
+            echo "ERROR: sdkmanager not found, listing SDK tree:"
+            find "$SDK_ROOT" -maxdepth 5 -type f 2>/dev/null | head -50
+            exit 1
+          fi
+          # 自动接受所有 license(给一个文件,避免交互卡死)
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          # 显式安装报错的 build-tools;37.0.0 和 aidl
+          yes | "$SDKMANAGER" "build-tools;37.0.0" > /dev/null 2>&1 || true
+          # 验证 build-tools 装上了
+          ls "$SDK_ROOT/build-tools/" || echo "build-tools still missing"
+          # 验证 aidl 存在
+          AIDL=$(find "$SDK_ROOT/build-tools" -name aidl -type f 2>/dev/null | head -1)
+          echo "aidl: $AIDL"
+          [ -n "$AIDL" ] || { echo "aidl still not found"; exit 1; }
+
+      # ---- 9. 正式编译 APK ----
       - name: Build APK
         run: |
           buildozer -v android debug
-        # buildozer 在 CI 中可能因为源码目录布局而失败,加个保险:
-        # 如果失败,显示日志便于排错
         continue-on-error: false
 
-      # ---- 8. 失败时上传日志便于排查 ----
+      # ---- 10. 失败时上传日志便于排查 ----
       - name: Upload buildozer log on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -81,7 +109,7 @@ jobs:
           path: .buildozer/android/platform/**/*.log
           if-no-files-found: ignore
 
-      # ---- 9. 上传最终 APK ----
+      # ---- 11. 上传最终 APK ----
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
@@ -90,7 +118,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30  # 保留 30 天,足够下载
 
-      # ---- 10. 输出 APK 文件大小(便于判断是否完整) ----
+      # ---- 12. 输出 APK 文件大小(便于判断是否完整) ----
       - name: Show APK info
         run: |
           ls -lh bin/*.apk
