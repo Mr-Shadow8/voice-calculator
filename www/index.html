@@ -195,7 +195,16 @@
       return (negative ? '负' : '') + result;
     }
 
-    // ---------------- 语音播报(Web Speech API) ----------------
+    // ---------------- 语音播报(双引擎) ----------------
+    // APK 内:调用原生 Android TextToSpeech(系统级,稳定出声)
+    // 浏览器:回退到 Web Speech API(双击 index.html 调试用)
+
+    // 判断是否运行在 Capacitor 原生壳里
+    var isNative = !!(window.Capacitor &&
+      (typeof window.Capacitor.isNativePlatform === 'function'
+        ? window.Capacitor.isNativePlatform() : true));
+
+    // ---- 引擎 B:浏览器 Web Speech API ----
     var zhVoice = null;
 
     function loadVoices() {
@@ -218,22 +227,47 @@
 
     if ('speechSynthesis' in window) {
       loadVoices();
-      // 部分浏览器语音列表异步加载
       speechSynthesis.onvoiceschanged = loadVoices;
     }
 
-    // 非阻塞播报;cancel 实现“新按键覆盖上一句”,连按不堆积
-    function speak(text) {
-      if (!text || !('speechSynthesis' in window)) return;
+    function speakWeb(text) {
+      if (!('speechSynthesis' in window)) return;
       try {
-        speechSynthesis.cancel();
+        speechSynthesis.cancel(); // 新按键覆盖上一句,连按不堆积
         var u = new SpeechSynthesisUtterance(text);
         u.lang = 'zh-CN';
         u.rate = 1.0;
         u.pitch = 1.0;
         if (zhVoice) u.voice = zhVoice;
         speechSynthesis.speak(u);
-      } catch (e) { /* 静默:设备无 TTS 引擎时不影响计算 */ }
+      } catch (e) { /* 无 TTS 引擎时静默,不影响计算 */ }
+    }
+
+    // ---- 引擎 A:原生 TextToSpeech 插件(@capacitor-community/text-to-speech) ----
+    function speakNative(text) {
+      try {
+        var NativeTTS = window.Capacitor.Plugins.TextToSpeech;
+        // queue:false => QUEUE_FLUSH,连按即时打断上一句
+        var p = NativeTTS.speak({
+          text: text,
+          lang: 'zh-CN',
+          rate: 1.0,
+          pitch: 1.0,
+          volume: 1.0,
+          queue: false
+        });
+        if (p && typeof p.catch === 'function') {
+          p.catch(function () { speakWeb(text); }); // 引擎异常时回退网页引擎
+        }
+      } catch (e) {
+        speakWeb(text);
+      }
+    }
+
+    function speak(text) {
+      if (!text) return;
+      if (isNative) speakNative(text);
+      else speakWeb(text);
     }
 
     // ---------------- 计算器状态与逻辑 ----------------
