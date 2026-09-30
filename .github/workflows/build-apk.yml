@@ -1,113 +1,69 @@
 name: Build Voice Calculator APK
 
-# 触发条件:push 到 main/master、PR、以及手动触发
+# push 到 main/master 或在网页手动点 Run workflow 时触发
 on:
   push:
     branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
-  workflow_dispatch:  # GitHub 网页上可手动点 "Run workflow"
+  workflow_dispatch:
 
 jobs:
   build:
-    name: Build APK (debug)
+    name: Build APK with Gradle
     runs-on: ubuntu-latest
-    timeout-minutes: 90  # 防止卡死,默认 6 小时太长
+    timeout-minutes: 30
 
     steps:
       # ---- 1. 拉取代码 ----
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ---- 2. 准备 Python 3.11 ----
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      # ---- 2. Node.js 20(Capacitor CLI 需要) ----
+      # 注意:仓库没有 package-lock.json,不要开 cache:'npm',否则该步骤会报错
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
         with:
-          python-version: '3.11'
+          node-version: '20'
 
-      # ---- 3. 安装系统依赖(Java/工具链) ----
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            git zip unzip \
-            python3-pip autoconf libtool pkg-config \
-            zlib1g-dev libncurses5-dev libstdc++6 libssl-dev \
-            ccache
-
-      # ---- 4. 安装 Java 17(Temurin 发行版,兼容性最好) ----
+      # ---- 3. JDK 17(AGP 8.x / Gradle 需要) ----
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      # ---- 5. 预装 Android SDK + 接受 license(社区标准 action) ----
-      # 这步会装最新 cmdline-tools,自动接受所有 license,build-tools 等组件
-      # 修复 buildozer 自带老 cmdline-tools(6514223)与 Java 17 不兼容导致 sdkmanager 崩溃
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          accept-android-sdk-licenses: true
-          packages: 'build-tools;34.0.0 platforms;android-34'
+      # ---- 4. Gradle 缓存(二次编译从 6 分降到 2 分) ----
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
 
-      # ---- 6. 安装 buildozer + cython ----
-      - name: Install buildozer
+      # ---- 5. 安装 Capacitor 依赖 ----
+      - name: Install npm dependencies
+        run: npm install
+
+      # ---- 6. 生成 Android 原生工程并同步网页资源 ----
+      # CI 环境是干净检出,没有 android/ 目录,这里动态生成
+      - name: Add Android platform
+        run: npx cap add android
+
+      - name: Copy web assets
+        run: npx cap copy android
+
+      # ---- 7. Gradle 编译 debug APK ----
+      # ubuntu-latest 已预装 Android SDK 且 license 全部接受,无需任何额外配置
+      - name: Build debug APK
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon
+
+      # ---- 8. 改名并输出信息 ----
+      - name: Prepare APK
         run: |
-          python -m pip install --upgrade pip
-          pip install buildozer cython==0.29.36
+          cp android/app/build/outputs/apk/debug/app-debug.apk voice-calculator-debug.apk
+          ls -lh voice-calculator-debug.apk
 
-      # ---- 7. 缓存 buildozer 全局数据(二次编译可从 30 分降到 5 分) ----
-      - name: Cache buildozer global
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.buildozer/global_packages
-            .buildozer
-          key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
-          restore-keys: |
-            buildozer-${{ runner.os }}-
-
-      # ---- 8. 让 buildozer 复用预装的 SDK,不再自己下载 ----
-      - name: Configure buildozer to use pre-installed SDK
-        run: |
-          # setup-android action 把 SDK 装在 $ANDROID_SDK_ROOT
-          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
-          echo "Using pre-installed Android SDK at: $ANDROID_SDK_ROOT"
-          ls -la "$ANDROID_SDK_ROOT"
-          ls "$ANDROID_SDK_ROOT/build-tools/" || echo "build-tools missing!"
-          # 验证 aidl 存在
-          AIDL=$(find "$ANDROID_SDK_ROOT/build-tools" -name aidl -type f 2>/dev/null | head -1)
-          echo "aidl: $AIDL"
-          [ -n "$AIDL" ] || { echo "aidl not found, aborting"; exit 1; }
-
-      # ---- 9. 正式编译 APK ----
-      - name: Build APK
-        run: |
-          buildozer -v android debug
-        continue-on-error: false
-
-      # ---- 10. 失败时上传日志便于排查 ----
-      - name: Upload buildozer log on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: buildozer-log
-          path: .buildozer/android/platform/**/*.log
-          if-no-files-found: ignore
-
-      # ---- 11. 上传最终 APK ----
+      # ---- 9. 上传 APK(在 Actions 运行页底部 Artifacts 下载) ----
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: voice-calculator-apk
-          path: bin/*.apk
+          path: voice-calculator-debug.apk
           if-no-files-found: error
-          retention-days: 30  # 保留 30 天,足够下载
-
-      # ---- 12. 输出 APK 文件大小(便于判断是否完整) ----
-      - name: Show APK info
-        run: |
-          ls -lh bin/*.apk
-          echo "::notice::APK built successfully, available in the 'voice-calculator-apk' artifact."
+          retention-days: 30
