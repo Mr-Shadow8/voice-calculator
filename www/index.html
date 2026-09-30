@@ -244,17 +244,45 @@
     }
 
     // ---- 引擎 A:原生 TextToSpeech 插件(@capacitor-community/text-to-speech) ----
-    function speakNative(text) {
+    var nativeTTS = null;
+    function getNativeTTS() {
+      if (nativeTTS === null && window.Capacitor && window.Capacitor.Plugins) {
+        nativeTTS = window.Capacitor.Plugins.TextToSpeech || false;
+      }
+      return nativeTTS || null;
+    }
+
+    // 预热:App 启动后立即用“静音短句”驱动系统 TTS 完成初始化和中文语言加载,
+    // 首次按键时引擎已就绪,消除首字 200ms~1s 的冷启动延迟
+    function warmUpNative() {
+      var tts = getNativeTTS();
+      if (!tts) return;
       try {
-        var NativeTTS = window.Capacitor.Plugins.TextToSpeech;
-        // queue:false => QUEUE_FLUSH,连按即时打断上一句
-        var p = NativeTTS.speak({
+        // volume 0,人耳听不到;queueStrategy 0 = QUEUE_FLUSH
+        var p = tts.speak({
+          text: ' ',
+          lang: 'zh-CN',
+          rate: 1.0,
+          pitch: 1.0,
+          volume: 0.0,
+          queueStrategy: 0
+        });
+        if (p && typeof p.catch === 'function') p.catch(function () {});
+      } catch (e) { /* 引擎可能还没初始化完,稍后重试 */ }
+    }
+
+    function speakNative(text) {
+      var tts = getNativeTTS();
+      if (!tts) { speakWeb(text); return; }
+      try {
+        // queueStrategy:0 = QUEUE_FLUSH,新按键即时打断上一句,连按不排队
+        var p = tts.speak({
           text: text,
           lang: 'zh-CN',
           rate: 1.0,
           pitch: 1.0,
           volume: 1.0,
-          queue: false
+          queueStrategy: 0
         });
         if (p && typeof p.catch === 'function') {
           p.catch(function () { speakWeb(text); }); // 引擎异常时回退网页引擎
@@ -314,8 +342,8 @@
       } else {
         return;
       }
+      speak(speakWord); // 先派发音讯,再刷新屏幕
       refresh();
-      speak(speakWord);
     }
 
     function formatResult(x) {
@@ -392,7 +420,8 @@
     }
 
     // ---------------- 事件绑定(事件委托) ----------------
-    document.getElementById('keys').addEventListener('click', function (e) {
+    // 用 pointerdown 而非 click:手指“按下”瞬间触发,比手指抬起后的 click 快 50-100ms
+    document.getElementById('keys').addEventListener('pointerdown', function (e) {
       var btn = e.target.closest('button');
       if (!btn) return;
 
@@ -400,12 +429,12 @@
       switch (action) {
         case 'num':
           var v = btn.getAttribute('data-value');
+          speak(DIGIT_CN[v]); // 先派发音讯到原生层,再刷新屏幕
           addChar(v);
-          speak(DIGIT_CN[v]);
           break;
         case 'dot':
-          addChar('.');
           speak('点');
+          addChar('.');
           break;
         case 'op':
           addOp(btn.getAttribute('data-value'), btn.getAttribute('data-speak'));
@@ -432,6 +461,19 @@
 
     // 初始化显示
     refresh();
+
+    // ---- TTS 预热调度(消除首字延迟) ----
+    if (isNative) {
+      warmUpNative();                          // 启动即预热
+      setTimeout(warmUpNative, 600);           // 引擎服务绑定较慢时兜底重试
+      setTimeout(warmUpNative, 1500);          // 再兜底一次,确保中文语言已加载
+      // 用户第一次触摸屏幕时也预热一次(应对 App 切后台后引擎被回收)
+      // 必须用捕获阶段,保证预热(flush)早于按键自身的播报,否则会打断第一个字
+      document.addEventListener('pointerdown', function once() {
+        warmUpNative();
+        document.removeEventListener('pointerdown', once, true);
+      }, true);
+    }
   })();
   </script>
 </body>
