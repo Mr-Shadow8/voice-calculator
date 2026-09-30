@@ -1,0 +1,13 @@
+{
+  "name": "voice-calculator",
+  "version": "1.0.0",
+  "private": true,
+  "description": "带中文语音播报的计算器 APK",
+  "dependencies": {
+    "@capacitor/android": "^6.2.0",
+    "@capacitor/core": "^6.2.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.2.0"
+  }
+}
