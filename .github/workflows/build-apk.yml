@@ -30,69 +30,57 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            git zip unzip openjdk-17-jdk \
+            git zip unzip \
             python3-pip autoconf libtool pkg-config \
             zlib1g-dev libncurses5-dev libstdc++6 libssl-dev \
             ccache
 
-      # ---- 4. 安装 buildozer + cython ----
+      # ---- 4. 安装 Java 17(Temurin 发行版,兼容性最好) ----
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      # ---- 5. 预装 Android SDK + 接受 license(社区标准 action) ----
+      # 这步会装最新 cmdline-tools,自动接受所有 license,build-tools 等组件
+      # 修复 buildozer 自带老 cmdline-tools(6514223)与 Java 17 不兼容导致 sdkmanager 崩溃
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          accept-android-sdk-licenses: true
+          packages: 'build-tools;34.0.0 platforms;android-34'
+
+      # ---- 6. 安装 buildozer + cython ----
       - name: Install buildozer
         run: |
           python -m pip install --upgrade pip
           pip install buildozer cython==0.29.36
 
-      # ---- 5. 缓存 buildozer 全局数据(二次编译可从 30 分降到 5 分) ----
+      # ---- 7. 缓存 buildozer 全局数据(二次编译可从 30 分降到 5 分) ----
       - name: Cache buildozer global
         uses: actions/cache@v4
         with:
           path: |
             ~/.buildozer/global_packages
-            ~/.buildozer/android/platform
             .buildozer
           key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
             buildozer-${{ runner.os }}-
 
-      # ---- 6. 设置环境变量 ----
-      - name: Configure buildozer environment
+      # ---- 8. 让 buildozer 复用预装的 SDK,不再自己下载 ----
+      - name: Configure buildozer to use pre-installed SDK
         run: |
-          echo "ANDROID_HOME=$HOME/.buildozer/android/platform/android-sdk" >> $GITHUB_ENV
-          echo "ANDROID_SDK_ROOT=$HOME/.buildozer/android/platform/android-sdk" >> $GITHUB_ENV
-          mkdir -p ~/.buildozer
-
-      # ---- 7. 触发 buildozer 下载 SDK(p4a 会失败但 SDK 已下下来) ----
-      - name: Pre-download Android SDK
-        run: |
-          # 第一次运行 buildozer,会下载 Android SDK/NDK;
-          # 它会因为 license 没接受而失败,这步允许失败
-          buildozer -v android help > /dev/null 2>&1 || true
-          # 保险:再尝试一次让 SDK 完整下载
-          buildozer -v android adb > /dev/null 2>&1 || true
-
-      # ---- 8. 接受所有 Android SDK License(修复 build-tools;37 无法安装的问题) ----
-      - name: Accept Android SDK licenses
-        run: |
-          SDK_ROOT="$HOME/.buildozer/android/platform/android-sdk"
-          echo "SDK_ROOT=$SDK_ROOT"
-          ls -la "$SDK_ROOT" 2>/dev/null || { echo "SDK not found"; exit 1; }
-          # 找 sdkmanager(可能在 tools/bin 或 cmdline-tools/*/bin)
-          SDKMANAGER=$(find "$SDK_ROOT" -name sdkmanager -type f 2>/dev/null | head -1)
-          echo "Found sdkmanager: $SDKMANAGER"
-          if [ -z "$SDKMANAGER" ]; then
-            echo "ERROR: sdkmanager not found, listing SDK tree:"
-            find "$SDK_ROOT" -maxdepth 5 -type f 2>/dev/null | head -50
-            exit 1
-          fi
-          # 自动接受所有 license(给一个文件,避免交互卡死)
-          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
-          # 显式安装报错的 build-tools;37.0.0 和 aidl
-          yes | "$SDKMANAGER" "build-tools;37.0.0" > /dev/null 2>&1 || true
-          # 验证 build-tools 装上了
-          ls "$SDK_ROOT/build-tools/" || echo "build-tools still missing"
+          # setup-android action 把 SDK 装在 $ANDROID_SDK_ROOT
+          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+          echo "Using pre-installed Android SDK at: $ANDROID_SDK_ROOT"
+          ls -la "$ANDROID_SDK_ROOT"
+          ls "$ANDROID_SDK_ROOT/build-tools/" || echo "build-tools missing!"
           # 验证 aidl 存在
-          AIDL=$(find "$SDK_ROOT/build-tools" -name aidl -type f 2>/dev/null | head -1)
+          AIDL=$(find "$ANDROID_SDK_ROOT/build-tools" -name aidl -type f 2>/dev/null | head -1)
           echo "aidl: $AIDL"
-          [ -n "$AIDL" ] || { echo "aidl still not found"; exit 1; }
+          [ -n "$AIDL" ] || { echo "aidl not found, aborting"; exit 1; }
 
       # ---- 9. 正式编译 APK ----
       - name: Build APK
