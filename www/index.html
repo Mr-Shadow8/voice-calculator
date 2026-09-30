@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport"
+        content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="format-detection" content="telephone=no">
+  <title>语音计算器</title>
+  <style>
+    /* ===== 语音计算器样式(手机竖屏,深色主题) ===== */
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+    }
+    body {
+      font-family: -apple-system, "PingFang SC", "Microsoft YaHei",
+                   "Helvetica Neue", Arial, sans-serif;
+      background: #0F1115;
+      color: #FFFFFF;
+      padding-top: env(safe-area-inset-top);
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+    .calculator {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      height: 100%;
+      max-width: 520px;
+      margin: 0 auto;
+      padding: 12px;
+    }
+    /* 显示区 */
+    .display-wrap {
+      flex: 0 0 26%;
+      display: flex;
+      align-items: flex-end;
+      justify-content: flex-end;
+      padding: 8px 14px 18px;
+    }
+    .display {
+      width: 100%;
+      text-align: right;
+      font-size: clamp(40px, 11vw, 68px);
+      font-weight: 300;
+      line-height: 1.1;
+      word-break: break-all;
+      overflow-wrap: anywhere;
+      color: #FFFFFF;
+    }
+    /* 按键区 */
+    .keys {
+      flex: 1 1 auto;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      grid-template-rows: repeat(5, 1fr);
+      gap: 10px;
+      min-height: 0;
+    }
+    .key {
+      border: none;
+      outline: none;
+      border-radius: 16px;
+      font-size: clamp(24px, 6.4vw, 34px);
+      font-weight: 500;
+      color: #FFFFFF;
+      background: #33373F;
+      cursor: pointer;
+      touch-action: manipulation;
+      transition: transform 0.06s ease, filter 0.06s ease;
+    }
+    .key:active {
+      filter: brightness(1.45);
+      transform: scale(0.95);
+    }
+    .key-fn { background: #5A5F6B; }
+    .key-clear { background: #E0455B; }
+    .key-op {
+      background: #FF9500;
+      font-size: clamp(28px, 7vw, 38px);
+    }
+    .key-eq { background: #34C759; }
+  </style>
+</head>
+<body>
+  <main class="calculator">
+    <!-- 显示区 -->
+    <div class="display-wrap">
+      <div id="display" class="display">0</div>
+    </div>
+
+    <!-- 按键区 4 列 × 5 行 -->
+    <div class="keys" id="keys">
+      <button data-action="clear"   class="key key-clear">C</button>
+      <button data-action="back"    class="key key-fn">⌫</button>
+      <button data-action="percent" class="key key-fn">%</button>
+      <button data-action="op" data-value="/" data-speak="除" class="key key-op">÷</button>
+
+      <button data-action="num" data-value="7" class="key">7</button>
+      <button data-action="num" data-value="8" class="key">8</button>
+      <button data-action="num" data-value="9" class="key">9</button>
+      <button data-action="op" data-value="*" data-speak="乘" class="key key-op">×</button>
+
+      <button data-action="num" data-value="4" class="key">4</button>
+      <button data-action="num" data-value="5" class="key">5</button>
+      <button data-action="num" data-value="6" class="key">6</button>
+      <button data-action="op" data-value="-" data-speak="减" class="key key-op">−</button>
+
+      <button data-action="num" data-value="1" class="key">1</button>
+      <button data-action="num" data-value="2" class="key">2</button>
+      <button data-action="num" data-value="3" class="key">3</button>
+      <button data-action="op" data-value="+" data-speak="加" class="key key-op">+</button>
+
+      <button data-action="sign"    class="key key-fn">±</button>
+      <button data-action="num" data-value="0" class="key">0</button>
+      <button data-action="dot"     class="key">.</button>
+      <button data-action="equals"  class="key key-eq">=</button>
+    </div>
+  </main>
+
+  <script>
+  /* =========================================================
+   * 语音计算器
+   * - 数字/运算符按键即时中文播报(Web Speech API)
+   * - 按 = 播报完整结果(数字转中文读法)
+   * ========================================================= */
+  (function () {
+    'use strict';
+
+    // ---------------- 数字转中文 ----------------
+    var DIGIT_CN = {
+      '0': '零', '1': '一', '2': '二', '3': '三', '4': '四',
+      '5': '五', '6': '六', '7': '七', '8': '八', '9': '九'
+    };
+    var UNIT_CN = ['', '十', '百', '千', '万', '十万', '百万', '千万', '亿'];
+
+    // 整数部分转中文:'1234' -> '一千二百三十四'
+    function intToChinese(numStr) {
+      numStr = numStr.replace(/^0+/, '') || '0';
+      if (numStr === '0') return '零';
+
+      var n = numStr.length;
+      var out = [];
+      for (var i = 0; i < n; i++) {
+        var pos = n - i - 1;
+        var ch = numStr.charAt(i);
+        var unit = pos < UNIT_CN.length ? UNIT_CN[pos] : '';
+        if (ch === '0') {
+          // 连续的 0 只读一个“零”,末尾 0 不读
+          if (out.length && out[out.length - 1].indexOf('零') !== 0
+              && out[out.length - 1].charAt(out[out.length - 1].length - 1) !== '零') {
+            out.push('零');
+          }
+          continue;
+        }
+        out.push(DIGIT_CN[ch] + unit);
+      }
+      var s = out.join('').replace(/零+$/, '');
+      // “一十”开头简写为“十”
+      if (s.indexOf('一十') === 0) s = '十' + s.slice(2);
+      return s;
+    }
+
+    // 任意数字字符串转中文,支持负数/小数
+    function numToChinese(s) {
+      s = String(s).replace(/\s/g, '');
+      if (!s) return '';
+      var negative = false;
+      if (s.charAt(0) === '-') {
+        negative = true;
+        s = s.slice(1);
+      }
+      var result;
+      if (s.indexOf('.') !== -1) {
+        var parts = s.split('.');
+        var intPart = parts[0];
+        var decPart = parts[1] || '';
+        var intCn = intPart ? intToChinese(intPart) : '';
+        var decCn = '';
+        for (var i = 0; i < decPart.length; i++) {
+          if (DIGIT_CN[decPart.charAt(i)]) decCn += DIGIT_CN[decPart.charAt(i)];
+        }
+        result = intCn ? intCn + '点' + decCn : '零点' + decCn;
+      } else {
+        result = intToChinese(s);
+      }
+      return (negative ? '负' : '') + result;
+    }
+
+    // ---------------- 语音播报(Web Speech API) ----------------
+    var zhVoice = null;
+
+    function loadVoices() {
+      if (!('speechSynthesis' in window)) return;
+      var voices = speechSynthesis.getVoices();
+      zhVoice = null;
+      for (var i = 0; i < voices.length; i++) {
+        var lang = (voices[i].lang || '').toLowerCase();
+        if (lang === 'zh-cn') { zhVoice = voices[i]; break; }
+      }
+      if (!zhVoice) {
+        for (var j = 0; j < voices.length; j++) {
+          if ((voices[j].lang || '').toLowerCase().indexOf('zh') === 0) {
+            zhVoice = voices[j];
+            break;
+          }
+        }
+      }
+    }
+
+    if ('speechSynthesis' in window) {
+      loadVoices();
+      // 部分浏览器语音列表异步加载
+      speechSynthesis.onvoiceschanged = loadVoices;
+    }
+
+    // 非阻塞播报;cancel 实现“新按键覆盖上一句”,连按不堆积
+    function speak(text) {
+      if (!text || !('speechSynthesis' in window)) return;
+      try {
+        speechSynthesis.cancel();
+        var u = new SpeechSynthesisUtterance(text);
+        u.lang = 'zh-CN';
+        u.rate = 1.0;
+        u.pitch = 1.0;
+        if (zhVoice) u.voice = zhVoice;
+        speechSynthesis.speak(u);
+      } catch (e) { /* 静默:设备无 TTS 引擎时不影响计算 */ }
+    }
+
+    // ---------------- 计算器状态与逻辑 ----------------
+    var OPS = ['+', '-', '*', '/'];
+    var expr = '';
+
+    var displayEl = document.getElementById('display');
+
+    function formatDisplay(s) {
+      // 内部用 */,显示为 ×÷
+      return s.replace(/\*/g, '×').replace(/\//g, '÷');
+    }
+
+    function refresh() {
+      displayEl.textContent = expr ? formatDisplay(expr) : '0';
+    }
+
+    function currentNumberSegment() {
+      // 返回表达式中最后一个操作数(含负号)
+      var i = expr.length;
+      while (i > 0 && OPS.indexOf(expr.charAt(i - 1)) === -1) i--;
+      return expr.slice(i);
+    }
+
+    function addChar(ch) {
+      if (ch === '.') {
+        var seg = currentNumberSegment();
+        if (seg.indexOf('.') !== -1) return; // 当前操作数已有小数点
+      }
+      expr += ch;
+      refresh();
+    }
+
+    function addOp(op, speakWord) {
+      if (expr) {
+        var last = expr.charAt(expr.length - 1);
+        if (OPS.indexOf(last) !== -1) {
+          expr = expr.slice(0, -1) + op; // 末尾已是运算符则替换
+        } else {
+          expr += op;
+        }
+      } else if (op === '-') {
+        expr = '-'; // 空表达式只允许以负号开头
+      } else {
+        return;
+      }
+      refresh();
+      speak(speakWord);
+    }
+
+    function formatResult(x) {
+      if (!isFinite(x)) return null;
+      // 修正浮点误差,最多保留 10 位小数
+      var r = Math.round((x + Number.EPSILON) * 1e10) / 1e10;
+      return String(r);
+    }
+
+    function equals() {
+      if (!expr) return;
+      // 安全校验:仅允许数字、运算符、小数点
+      if (!/^[0-9+\-*/.]+$/.test(expr)) return;
+      // 末尾是运算符或小数点时补 0/去掉
+      var safeExpr = expr;
+      while (safeExpr && (OPS.indexOf(safeExpr.charAt(safeExpr.length - 1)) !== -1
+                          || safeExpr.charAt(safeExpr.length - 1) === '.')) {
+        safeExpr = safeExpr.slice(0, -1);
+      }
+      if (!safeExpr) return;
+
+      var result;
+      try {
+        result = Function('"use strict";return (' + safeExpr + ')')();
+      } catch (e) {
+        displayEl.textContent = '错误';
+        speak('表达式错误');
+        expr = '';
+        return;
+      }
+
+      if (!isFinite(result)) {
+        displayEl.textContent = '错误:除零';
+        speak('错误,除数不能为零');
+        expr = '';
+        return;
+      }
+
+      var resultStr = formatResult(result);
+      expr = resultStr;
+      refresh();
+      speak('等于 ' + numToChinese(resultStr));
+    }
+
+    function backspace() {
+      if (expr) expr = expr.slice(0, -1);
+      refresh();
+      speak('退格');
+    }
+
+    function toggleSign() {
+      if (!expr) return;
+      var idx = -1;
+      for (var i = 0; i < expr.length; i++) {
+        if (OPS.indexOf(expr.charAt(i)) !== -1) idx = i;
+      }
+      if (idx === expr.length - 1) return; // 末尾是运算符,无操作数
+      var before = expr.slice(0, idx + 1);
+      var num = expr.slice(idx + 1);
+      num = num.charAt(0) === '-' ? num.slice(1) : '-' + num;
+      expr = before + num;
+      refresh();
+      speak('正负号');
+    }
+
+    function percent() {
+      if (!expr || OPS.indexOf(expr.charAt(expr.length - 1)) !== -1) return;
+      try {
+        var v = Function('"use strict";return (' + expr + ')')() / 100;
+        expr = formatResult(v);
+        refresh();
+        speak('百分之');
+      } catch (e) { /* 忽略 */ }
+    }
+
+    // ---------------- 事件绑定(事件委托) ----------------
+    document.getElementById('keys').addEventListener('click', function (e) {
+      var btn = e.target.closest('button');
+      if (!btn) return;
+
+      var action = btn.getAttribute('data-action');
+      switch (action) {
+        case 'num':
+          var v = btn.getAttribute('data-value');
+          addChar(v);
+          speak(DIGIT_CN[v]);
+          break;
+        case 'dot':
+          addChar('.');
+          speak('点');
+          break;
+        case 'op':
+          addOp(btn.getAttribute('data-value'), btn.getAttribute('data-speak'));
+          break;
+        case 'equals':
+          equals();
+          break;
+        case 'clear':
+          expr = '';
+          refresh();
+          speak('清除');
+          break;
+        case 'back':
+          backspace();
+          break;
+        case 'sign':
+          toggleSign();
+          break;
+        case 'percent':
+          percent();
+          break;
+      }
+    });
+
+    // 初始化显示
+    refresh();
+  })();
+  </script>
+</body>
+</html>
